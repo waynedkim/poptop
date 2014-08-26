@@ -790,10 +790,10 @@ static void launch_pppd(char **pppaddrs, struct in_addr *inetaddrs)
                  pppd_argv[an++] = "pptpd-original-ip";
                  pppd_argv[an++] = inet_ntoa(inetaddrs[1]);
         }
-#endif
 
         pppd_argv[an++] = "remotenumber";
         pppd_argv[an++] = inet_ntoa(inetaddrs[1]);
+#endif
 
         /* argv arrays must always be NULL terminated */
         pppd_argv[an++] = NULL;
