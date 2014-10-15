@@ -226,8 +226,10 @@ static int vdaemon = 0;
 
 static char empty[1] = "";
 static char interfaces[32];
-static char log_interfaces[MAX_IFLOGTOSTR*MAXIF];
-static char log_relayed[(MAX_IFLOGTOSTR-1)*MAXIF+81];
+#define MAX_LOG_INTERFACES MAX_IFLOGTOSTR*MAXIF
+static char log_interfaces[MAX_LOG_INTERFACES];
+#define MAX_LOG_RELAYED MAX_IFLOGTOSTR*MAXIF+81
+static char log_relayed[MAX_LOG_RELAYED];
 static char *ipsec = empty;
 
 static void showusage(char *prog)
@@ -404,7 +406,7 @@ int main(int argc, char **argv) {
     showusage(argv[0]);
     _exit(1);
   } else {
-    sprintf(interfaces,"%s|%s", ifin, ifout);
+    snprintf(interfaces, 32, "%s|%s", ifin, ifout);
   }
 
   // If specified, become Daemon.
@@ -478,14 +480,18 @@ static void mainloop(int argc, char **argv)
   NVBCR_PRINTF(("Displaying INITIAL active interfaces..\n"));
   if (vnologging == 0) {
     logstr = log_interfaces;
-    logstr_cntr = sprintf(logstr, "Initial active interfaces: ");
+    logstr_cntr = snprintf(logstr, MAX_LOG_INTERFACES,
+                           "Initial active interfaces: ");
     logstr += logstr_cntr;
   }
   for (i = 0; iflist[i].index; i++)
     {
       NVBCR_PRINTF(("\t\tactive interface number: %d, if=(%s), sock_nr=%d\n", i, iflistToString(&(iflist[i])), cur_ifsnr[i].sock_nr));
       if (vnologging == 0) {
-        logstr_cntr = sprintf(logstr, "%s ", iflistLogIToString(&(iflist[i]), i, &(cur_ifsnr[i])));
+        logstr_cntr = snprintf(logstr,
+                               MAX_LOG_INTERFACES - strlen(log_interfaces),
+                               "%s ", iflistLogIToString(&(iflist[i]),
+                                                         i, &(cur_ifsnr[i])));
         logstr += logstr_cntr;
       }
     }
@@ -573,14 +579,18 @@ static void mainloop(int argc, char **argv)
               NVBCR_PRINTF(("Active interface set changed --> displaying current active interfaces..\n"));
               if (vnologging == 0) {
                 logstr = log_interfaces;
-                logstr_cntr = sprintf(logstr, "Active interface set changed to: ");
+                logstr_cntr = snprintf(logstr, MAX_LOG_INTERFACES,
+                                       "Active interface set changed to: ");
                 logstr += logstr_cntr;
               }
               for (i = 0; iflist[i].index; i++)
                 {
                   NVBCR_PRINTF(("\t\tactive interface number: %d, if=(%s), sock_nr=%d\n", i, iflistToString(&(iflist[i])), cur_ifsnr[i].sock_nr));
                   if (vnologging == 0) {
-                    logstr_cntr = sprintf(logstr, "%s ", iflistLogIToString(&(iflist[i]), i, &(cur_ifsnr[i])));
+                    logstr_cntr = snprintf(logstr,
+                                           MAX_LOG_INTERFACES - strlen(log_interfaces),
+                                           "%s ",
+                                           iflistLogIToString(&(iflist[i]), i, &(cur_ifsnr[i])));
                     logstr += logstr_cntr;
                   }
                 }
@@ -616,7 +626,7 @@ static void mainloop(int argc, char **argv)
                                     ntohs(ipp_p->udp.dest), ntohs(ipp_p->udp.source)));
                       if (vnologging == 0) {
                         logstr = log_relayed;
-                        logstr_cntr = sprintf(logstr, "UDP_BroadCast(sp=%d,dp=%d) from: %s relayed to: ", ntohs(ipp_p->udp.source),
+                        logstr_cntr = snprintf(logstr, MAX_LOG_RELAYED, "UDP_BroadCast(sp=%d,dp=%d) from: %s relayed to: ", ntohs(ipp_p->udp.source),
                                               ntohs(ipp_p->udp.dest), iflistLogRToString(&(iflist[i]), i, &(cur_ifsnr[i])));
                         logstr += logstr_cntr;
                       }
@@ -710,7 +720,7 @@ static void mainloop(int argc, char **argv)
                                 }
                               NVBCR_PRINTF(("Successfully relayed %d bytes \n", nrsent));
                               if (vnologging == 0) {
-                                logstr_cntr = sprintf(logstr, "%s ", iflistLogRToString(&(iflist[j]), j, &(cur_ifsnr[j])));
+                                logstr_cntr = snprintf(logstr, MAX_LOG_RELAYED - strlen(log_relayed), "%s ", iflistLogRToString(&(iflist[j]), j, &(cur_ifsnr[j])));
                                 logstr += logstr_cntr;
                               }
                             }
@@ -780,14 +790,14 @@ static void mainloop(int argc, char **argv)
                   NVBCR_PRINTF(("Active interface set changed --> displaying current active interfaces..\n"));
                   if (vnologging == 0) {
                     logstr = log_interfaces;
-                    logstr_cntr = sprintf(logstr, "Active interface set changed to: ");
+                    logstr_cntr = snprintf(logstr, MAX_LOG_INTERFACES, "Active interface set changed to: ");
                     logstr += logstr_cntr;
                   }
                   for (i = 0; iflist[i].index; i++)
                     {
                       NVBCR_PRINTF(("\t\tactive interface number: %d, if=(%s), sock_nr=%d\n", i, iflistToString(&(iflist[i])), cur_ifsnr[i].sock_nr));
                       if (vnologging == 0) {
-                        logstr_cntr = sprintf(logstr, "%s ", iflistLogIToString(&(iflist[i]), i, &(cur_ifsnr[i])));
+                        logstr_cntr = snprintf(logstr, MAX_LOG_INTERFACES - strlen(log_interfaces), "%s ", iflistLogIToString(&(iflist[i]), i, &(cur_ifsnr[i])));
                         logstr += logstr_cntr;
                       }
                     }
@@ -981,9 +991,9 @@ static char *IpProtToString( unsigned char prot )
 
 static char *iflistToString( struct iflist *ifp )
 {
-  static char str_tr[80+1];
+  static char str_tr[MAX_IFLOGTOSTR+90];
 
-  sprintf(str_tr, "index=%d, ifname=%s, ifaddr=%ld.%ld.%ld.%ld, ifdstaddr=%ld.%ld.%ld.%ld, flags1=0x%04lx",
+  snprintf(str_tr, MAX_IFLOGTOSTR+90, "index=%d, ifname=%s, ifaddr=%ld.%ld.%ld.%ld, ifdstaddr=%ld.%ld.%ld.%ld, flags1=0x%04lx",
           ifp->index, ifp->ifname,
           (ifp->ifaddr)>>24,
           ((ifp->ifaddr)&0x00ff0000)>>16,
@@ -1000,14 +1010,15 @@ static char *iflistToString( struct iflist *ifp )
 static char *iflistLogRToString( struct iflist *ifp, int idx, struct ifsnr *ifnr )
 {
   static char str_tr[MAX_IFLOGTOSTR];
-  sprintf(str_tr, "%s", ifp->ifname);
+  snprintf(str_tr, MAX_IFLOGTOSTR, "%s", ifp->ifname);
   return str_tr;
 }
 
 static char *iflistLogIToString( struct iflist *ifp, int idx, struct ifsnr *ifnr )
 {
-  static char str_tr[MAX_IFLOGTOSTR];
-  sprintf(str_tr, "%s(%d/%d/%d)", ifp->ifname, idx, ifp->index, ifnr->sock_nr);
+  static char str_tr[MAX_IFLOGTOSTR+64];
+  snprintf(str_tr, MAX_IFLOGTOSTR+64, "%s(%d/%d/%d)", ifp->ifname,
+           idx, ifp->index, ifnr->sock_nr);
   return str_tr;
 }
 
