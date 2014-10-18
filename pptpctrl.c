@@ -545,6 +545,8 @@ static void bail(int sigraised)
 
         if (pptpctrl_debug)
                 syslog(LOG_DEBUG, "CTRL: Exiting now");
+
+        exit((GET_VALUE(PAC, call_id_pair) == htons(-1)) ? 0 : 1);
 }
 
 /*
