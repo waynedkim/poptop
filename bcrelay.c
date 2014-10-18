@@ -225,11 +225,9 @@ static int vdaemon = 0;
   if ((vdaemon == 0) && (do_org_info_printfs == 1)) printf args
 
 static char empty[1] = "";
-static char interfaces[32];
-#define MAX_LOG_INTERFACES MAX_IFLOGTOSTR*MAXIF
-static char log_interfaces[MAX_LOG_INTERFACES];
-#define MAX_LOG_RELAYED MAX_IFLOGTOSTR*MAXIF+81
-static char log_relayed[MAX_LOG_RELAYED];
+static char reg_interfaces[MAX_IFLOGTOSTR*2+2];
+static char log_interfaces[MAX_IFLOGTOSTR*MAXIF];
+static char log_relayed[MAX_IFLOGTOSTR*MAXIF+81];
 static char *ipsec = empty;
 
 static void showusage(char *prog)
@@ -405,8 +403,11 @@ int main(int argc, char **argv) {
     syslog(LOG_INFO,"Listen-mode or outgoing or IPsec interface required!");
     showusage(argv[0]);
     _exit(1);
-  } else {
-    snprintf(interfaces, 32, "%s|%s", ifin, ifout);
+  }
+  if (snprintf(reg_interfaces, sizeof(reg_interfaces),
+               "%s|%s", ifin, ifout) >= sizeof(reg_interfaces)) {
+    syslog(LOG_ERR, "interface names exceed size");
+    _exit(1);
   }
 
   // If specified, become Daemon.
@@ -440,7 +441,6 @@ static void mainloop(int argc, char **argv)
 {
   socklen_t salen = sizeof(struct sockaddr_ll);
   int i, s, rcg, j, no_discifs_cntr, ifs_change;
-  int logstr_cntr;
   struct iflist *iflist = NULL;         // Initialised after the 1st packet
   struct sockaddr_ll sa;
   struct packet *ipp_p;
@@ -450,7 +450,10 @@ static void mainloop(int argc, char **argv)
   static struct ifsnr old_ifsnr[MAXIF+1]; // Old iflist to socket fd's mapping list
   static struct ifsnr cur_ifsnr[MAXIF+1]; // Current iflist to socket fd's mapping list
   unsigned char buf[1518];
-  char *logstr = empty;
+
+  char *lptr;           /* log buffer pointer for next chunk append */
+  int lsize = 0;        /* count of remaining unused bytes in log buffer */
+  int chunk;            /* bytes to be added to log buffer by chunk */
 
   no_discifs_cntr = MAX_NODISCOVER_IFS;
   ifs_change = 0;
@@ -479,20 +482,24 @@ static void mainloop(int argc, char **argv)
   }
   NVBCR_PRINTF(("Displaying INITIAL active interfaces..\n"));
   if (vnologging == 0) {
-    logstr = log_interfaces;
-    logstr_cntr = snprintf(logstr, MAX_LOG_INTERFACES,
-                           "Initial active interfaces: ");
-    logstr += logstr_cntr;
+    lptr = log_interfaces;
+    lsize = sizeof(log_interfaces);
+    chunk = snprintf(lptr, lsize, "%s ", "Initial active interfaces:");
+    if (chunk < lsize) {
+      lptr += chunk;
+      lsize -= chunk;
+    }
   }
   for (i = 0; iflist[i].index; i++)
     {
       NVBCR_PRINTF(("\t\tactive interface number: %d, if=(%s), sock_nr=%d\n", i, iflistToString(&(iflist[i])), cur_ifsnr[i].sock_nr));
       if (vnologging == 0) {
-        logstr_cntr = snprintf(logstr,
-                               MAX_LOG_INTERFACES - strlen(log_interfaces),
-                               "%s ", iflistLogIToString(&(iflist[i]),
-                                                         i, &(cur_ifsnr[i])));
-        logstr += logstr_cntr;
+        chunk = snprintf(lptr, lsize, "%s ",
+                         iflistLogIToString(&(iflist[i]), i, &(cur_ifsnr[i])));
+        if (chunk < lsize) {
+          lptr += chunk;
+          lsize -= chunk;
+        }
       }
     }
   if (vnologging == 0) syslog(LOG_INFO, "%s", log_interfaces);
@@ -578,20 +585,25 @@ static void mainloop(int argc, char **argv)
             {
               NVBCR_PRINTF(("Active interface set changed --> displaying current active interfaces..\n"));
               if (vnologging == 0) {
-                logstr = log_interfaces;
-                logstr_cntr = snprintf(logstr, MAX_LOG_INTERFACES,
-                                       "Active interface set changed to: ");
-                logstr += logstr_cntr;
+                lptr = log_interfaces;
+                lsize = sizeof(log_interfaces);
+                chunk = snprintf(lptr, lsize, "%s ",
+                                 "Active interface set changed to:");
+                if (chunk < lsize) {
+                  lptr += chunk;
+                  lsize -= chunk;
+                }
               }
               for (i = 0; iflist[i].index; i++)
                 {
                   NVBCR_PRINTF(("\t\tactive interface number: %d, if=(%s), sock_nr=%d\n", i, iflistToString(&(iflist[i])), cur_ifsnr[i].sock_nr));
                   if (vnologging == 0) {
-                    logstr_cntr = snprintf(logstr,
-                                           MAX_LOG_INTERFACES - strlen(log_interfaces),
-                                           "%s ",
+                    chunk = snprintf(lptr, lsize, "%s ",
                                            iflistLogIToString(&(iflist[i]), i, &(cur_ifsnr[i])));
-                    logstr += logstr_cntr;
+                    if (chunk < lsize) {
+                      lptr += chunk;
+                      lsize -= chunk;
+                    }
                   }
                 }
               if (vnologging == 0) syslog(LOG_INFO, "%s", log_interfaces);
@@ -625,10 +637,17 @@ static void mainloop(int argc, char **argv)
                       NVBCR_PRINTF(("is an UDP BROADCAST (dstPort=%d, srcPort=%d) (with TTL!=1 and UDP_CHKSUM!=0)\n\n",
                                     ntohs(ipp_p->udp.dest), ntohs(ipp_p->udp.source)));
                       if (vnologging == 0) {
-                        logstr = log_relayed;
-                        logstr_cntr = snprintf(logstr, MAX_LOG_RELAYED, "UDP_BroadCast(sp=%d,dp=%d) from: %s relayed to: ", ntohs(ipp_p->udp.source),
-                                              ntohs(ipp_p->udp.dest), iflistLogRToString(&(iflist[i]), i, &(cur_ifsnr[i])));
-                        logstr += logstr_cntr;
+                        lptr = log_relayed;
+                        lsize = sizeof(log_relayed);
+                        chunk = snprintf(lptr, lsize,
+                                         "UDP_BroadCast(sp=%d,dp=%d) from: %s relayed to: ",
+                                         ntohs(ipp_p->udp.source),
+                                         ntohs(ipp_p->udp.dest),
+                                         iflistLogRToString(&(iflist[i]), i, &(cur_ifsnr[i])));
+                        if (chunk < lsize) {
+                          lptr += chunk;
+                          lsize -= chunk;
+                        }
                       }
 
                       /* going to relay a broadcast packet on all the
@@ -720,8 +739,12 @@ static void mainloop(int argc, char **argv)
                                 }
                               NVBCR_PRINTF(("Successfully relayed %d bytes \n", nrsent));
                               if (vnologging == 0) {
-                                logstr_cntr = snprintf(logstr, MAX_LOG_RELAYED - strlen(log_relayed), "%s ", iflistLogRToString(&(iflist[j]), j, &(cur_ifsnr[j])));
-                                logstr += logstr_cntr;
+                                chunk = snprintf(lptr, lsize, "%s ",
+                                                 iflistLogRToString(&(iflist[j]), j, &(cur_ifsnr[j])));
+                                if (chunk < lsize) {
+                                  lptr += chunk;
+                                  lsize -= chunk;
+                                }
                               }
                             }
                         }
@@ -789,16 +812,25 @@ static void mainloop(int argc, char **argv)
                 {
                   NVBCR_PRINTF(("Active interface set changed --> displaying current active interfaces..\n"));
                   if (vnologging == 0) {
-                    logstr = log_interfaces;
-                    logstr_cntr = snprintf(logstr, MAX_LOG_INTERFACES, "Active interface set changed to: ");
-                    logstr += logstr_cntr;
+                    lptr = log_interfaces;
+                    lsize = sizeof(log_interfaces);
+                    chunk = snprintf(lptr, lsize, "%s ",
+                                     "Active interface set changed to:");
+                    if (chunk < lsize) {
+                      lptr += chunk;
+                      lsize -= chunk;
+                    }
                   }
                   for (i = 0; iflist[i].index; i++)
                     {
                       NVBCR_PRINTF(("\t\tactive interface number: %d, if=(%s), sock_nr=%d\n", i, iflistToString(&(iflist[i])), cur_ifsnr[i].sock_nr));
                       if (vnologging == 0) {
-                        logstr_cntr = snprintf(logstr, MAX_LOG_INTERFACES - strlen(log_interfaces), "%s ", iflistLogIToString(&(iflist[i]), i, &(cur_ifsnr[i])));
-                        logstr += logstr_cntr;
+                        chunk = snprintf(lptr, lsize, "%s ",
+                                         iflistLogIToString(&(iflist[i]), i, &(cur_ifsnr[i])));
+                        if (chunk < lsize) {
+                          lptr += chunk;
+                          lsize -= chunk;
+                        }
                       }
                     }
                   if (vnologging == 0) syslog(LOG_INFO, "%s", log_interfaces);
@@ -828,8 +860,7 @@ discoverActiveInterfaces(int s) {
   /* Reset ifs */
   memset(&ifs, 0, sizeof(ifs));
 
-  //regcomp(&preg, argv[1], REG_ICASE|REG_EXTENDED);
-  regcomp(&preg, interfaces, REG_ICASE|REG_EXTENDED);
+  regcomp(&preg, reg_interfaces, REG_ICASE|REG_EXTENDED);
   ifs.ifc_len = MAXIF*sizeof(struct ifreq);
   ifs.ifc_req = malloc(ifs.ifc_len);
   ioctl(s, SIOCGIFCONF, &ifs);                  // Discover active interfaces
@@ -993,7 +1024,7 @@ static char *iflistToString( struct iflist *ifp )
 {
   static char str_tr[MAX_IFLOGTOSTR+90];
 
-  snprintf(str_tr, MAX_IFLOGTOSTR+90, "index=%d, ifname=%s, ifaddr=%ld.%ld.%ld.%ld, ifdstaddr=%ld.%ld.%ld.%ld, flags1=0x%04lx",
+  snprintf(str_tr, sizeof(str_tr), "index=%d, ifname=%s, ifaddr=%ld.%ld.%ld.%ld, ifdstaddr=%ld.%ld.%ld.%ld, flags1=0x%04lx",
           ifp->index, ifp->ifname,
           (ifp->ifaddr)>>24,
           ((ifp->ifaddr)&0x00ff0000)>>16,
@@ -1010,14 +1041,14 @@ static char *iflistToString( struct iflist *ifp )
 static char *iflistLogRToString( struct iflist *ifp, int idx, struct ifsnr *ifnr )
 {
   static char str_tr[MAX_IFLOGTOSTR];
-  snprintf(str_tr, MAX_IFLOGTOSTR, "%s", ifp->ifname);
+  snprintf(str_tr, sizeof(str_tr), "%s", ifp->ifname);
   return str_tr;
 }
 
 static char *iflistLogIToString( struct iflist *ifp, int idx, struct ifsnr *ifnr )
 {
   static char str_tr[MAX_IFLOGTOSTR+64];
-  snprintf(str_tr, MAX_IFLOGTOSTR+64, "%s(%d/%d/%d)", ifp->ifname,
+  snprintf(str_tr, sizeof(str_tr), "%s(%d/%d/%d)", ifp->ifname,
            idx, ifp->index, ifnr->sock_nr);
   return str_tr;
 }
