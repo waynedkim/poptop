@@ -12,7 +12,7 @@
 #include <unistd.h>
 #include <utmp.h>
 #include <string.h>
-#include <pppd/pppd.h>
+#include <pppd.h>
 
 char pppd_version[] = VERSION;
 

@@ -115,6 +115,14 @@
 #include "our_syslog.h"
 #include "our_getopt.h"
 
+#define CONFIG_DHCP_RELAY
+#define CONFIG_MULTICAST_RELAY
+
+#ifdef CONFIG_DHCP_RELAY
+#include <net/route.h>
+#include "dhcp.h"
+#endif
+
 //#define VERSION "1.0"
 
 /* uncomment if you compile this without poptop's configure script */
@@ -179,6 +187,10 @@ struct iflist {
   unsigned long ifaddr;
   unsigned long ifdstaddr;
   unsigned long flags1;
+
+#ifdef CONFIG_DHCP_RELAY
+  char ifhwaddr[6];
+#endif
 };
 
 #define IFLIST_FLAGS1_IF_IS_ETH            0x00000001
@@ -186,6 +198,15 @@ struct iflist {
 #define IFLIST_FLAGS1_IF_IS_UNKNOWN        0x00000004
 #define IFLIST_FLAGS1_CHANGED_INNER_SADDR  0x00010000
 
+#define IP_BCAST_MASK      (htonl(0x000000FF))
+
+#ifdef CONFIG_MULTICAST_RELAY
+#define IP_MULTICAST_MASK  (htonl(0xE0000000))
+#endif
+
+#ifdef CONFIG_DHCP_RELAY
+static int add_route_to_host(unsigned long host, struct iflist *iflist);
+#endif
 
 /*
  * struct that keeps track of the socket fd's for every interface that
@@ -451,7 +472,7 @@ static void mainloop(int argc, char **argv)
   static struct ifsnr cur_ifsnr[MAXIF+1]; // Current iflist to socket fd's mapping list
   unsigned char buf[1518];
 
-  char *lptr;           /* log buffer pointer for next chunk append */
+  char *lptr = NULL;    /* log buffer pointer for next chunk append */
   int lsize = 0;        /* count of remaining unused bytes in log buffer */
   int chunk;            /* bytes to be added to log buffer by chunk */
 
@@ -621,15 +642,22 @@ static void mainloop(int argc, char **argv)
                 {
                   /* Valid socket number and pending input, let's read */
                   int rlen = read(cur_ifsnr[i].sock_nr, buf, sizeof(buf));
+
                   ipp_p = (struct packet *)&(buf[0]);
                   NVBCR_PRINTF(("IP_Packet=(tot_len=%d, id=%02x%02x, ttl=%d, prot=%s, src_ip=%d.%d.%d.%d, dst_ip=%d.%d.%d.%d) (on if: %d/%d) ", ntohs(ipp_p->ip.tot_len), (ntohs(ipp_p->ip.id))>>8, (ntohs(ipp_p->ip.id))&0x00ff, ipp_p->ip.ttl, IpProtToString(ipp_p->ip.protocol), (ntohl(ipp_p->ip.saddr))>>24, ((ntohl(ipp_p->ip.saddr))&0x00ff0000)>>16, ((ntohl(ipp_p->ip.saddr))&0x0000ff00)>>8, (ntohl(ipp_p->ip.saddr))&0x000000ff, (ntohl(ipp_p->ip.daddr))>>24, ((ntohl(ipp_p->ip.daddr))&0x00ff0000)>>16, ((ntohl(ipp_p->ip.daddr))&0x0000ff00)>>8, (ntohl(ipp_p->ip.daddr))&0x000000ff, i, iflist[i].index));
                   rcg -= 1;
 
+#ifdef CONFIG_MULTICAST_RELAY
+                  if ( (ipp_p->ip.protocol == IPPROTO_UDP || ipp_p->ip.protocol == IPPROTO_IGMP) &&
+                       ((ipp_p->ip.daddr & IP_MULTICAST_MASK) == IP_MULTICAST_MASK ||
+                        (ipp_p->ip.daddr & IP_BCAST_MASK) == IP_BCAST_MASK) )
+#else
                   if ( (ipp_p->ip.protocol == IPPROTO_UDP) &&
-                       (((ntohl(ipp_p->ip.daddr)) & 0x000000ff) == 0x000000ff) &&
+                       ((ipp_p->ip.daddr & IP_BCAST_MASK) == IP_BCAST_MASK) &&
                        (ipp_p->ip.ttl != 1) &&
                        (!((*IP_UDPPDU_CHECKSUM_MSB_PTR((unsigned char *)ipp_p+(4*ipp_p->ip.ihl)) == 0) &&
                           (*IP_UDPPDU_CHECKSUM_LSB_PTR((unsigned char *)ipp_p+(4*ipp_p->ip.ihl)) == 0))) )
+#endif
                     {
                       int nrsent;
                       int ifindex_to_exclude = iflist[i].index;
@@ -692,7 +720,7 @@ static void mainloop(int argc, char **argv)
                                 // should not matter as we reassemble
                                 // the packet at the other end.
                                 ipp_p->ip.daddr = iflist[j].bcast;
-  
+
                                 // check IP srcAddr (on some winXP
                                 // boxes it is found to be different
                                 // from the configured ppp address).
@@ -704,15 +732,59 @@ static void mainloop(int argc, char **argv)
                                     iflist[i].flags1 |= IFLIST_FLAGS1_CHANGED_INNER_SADDR;
                                   }
   
-                                // Update IP checkSum (TTL and
-                                // src/dest IP Address might have
-                                // changed)
-                                ip_update_checksum((unsigned char *)ipp_p);
+  #ifdef CONFIG_DHCP_RELAY
+                                if (ntohs(ipp_p->udp.dest) == 67 || ntohs(ipp_p->udp.source) == 67)
+                                {
+                                    struct dhcp *dhcp_p = (struct dhcp *)ipp_p->data;
+                                    if (dhcp_p->dp_htype == 0x01 && dhcp_p->dp_magic == htonl(DHCP_OPTS_COOKIE))
+                                    {
+                                        switch (dhcp_p->dp_options[2])
+                                        {
+                                            case DHCPREQUEST:
+                                                // Fall-through
+                                            case DHCPDISCOVER:
+                                                // Get reply to broadcast address
+                                                dhcp_p->dp_flags = htons(DHCP_FLAGS_BROADCAST);
+                                            break;
+
+                                            case DHCPACK:
+                                                NVBCR_PRINTF(("DHCP_ACK: Peer address is %02x-%02x-%02x-%02x-%02x-%02x (To: %s)\n",
+                                                        dhcp_p->dp_chaddr[0], dhcp_p->dp_chaddr[1], dhcp_p->dp_chaddr[2],
+                                                        dhcp_p->dp_chaddr[3], dhcp_p->dp_chaddr[4], dhcp_p->dp_chaddr[5],
+                                                        iflist[j].ifname
+                                                ));
+                                                if ( memcmp(iflist[j].ifhwaddr, dhcp_p->dp_chaddr, 6) != 0 &&
+                                                     memcmp(iflist[j].ifhwaddr, dhcp_p->dp_chaddr, 6) != 0 )
+                                                {
+                                                    NVBCR_PRINTF(("DHCP_ACK: We are gonna add routing entry. (%d.%d.%d.%d >> %s)\n",
+                                                        (dhcp_p->dp_yiaddr.s_addr & 0xFF), ((dhcp_p->dp_yiaddr.s_addr >> 8) & 0xFF),
+                                                        ((dhcp_p->dp_yiaddr.s_addr >> 16) & 0xFF), ((dhcp_p->dp_yiaddr.s_addr >> 24) & 0xFF),
+                                                        iflist[j].ifname
+                                                    ));
+                                                    // Make route entry to direct the interface
+                                                    add_route_to_host(dhcp_p->dp_yiaddr.s_addr, &iflist[j]);
+                                                }
+                                            break;
+                                        }
+                                    }
+                                }
+#endif
+
+#ifdef CONFIG_MULTICAST_RELAY
+                                if (ipp_p->ip.protocol == IPPROTO_UDP)
+                                {
+#endif
                                 /* Disable upper layer checksum */
                                 udppdu = (unsigned char *)ipp_p + (4 * ipp_p->ip.ihl);
                                 *IP_UDPPDU_CHECKSUM_MSB_PTR(udppdu) = (unsigned char)0;
                                 *IP_UDPPDU_CHECKSUM_LSB_PTR(udppdu) = (unsigned char)0;
-
+#ifdef CONFIG_MULTICAST_RELAY
+                                }
+#endif
+                                // Update IP checkSum (TTL and
+                                // src/dest IP Address might have
+                                // changed)
+                                ip_update_checksum((unsigned char *)ipp_p);
                                 prepare_ipp = 1;
                               }
 
@@ -895,6 +967,19 @@ discoverActiveInterfaces(int s) {
             strncpy(iflist[cntr].ifname, ifs.ifc_req[i].ifr_ifrn.ifrn_name,
                     sizeof(iflist[cntr].ifname));
             iflist[cntr].ifname[sizeof(iflist[cntr].ifname)-1] = 0;
+
+#ifdef CONFIG_DHCP_RELAY
+            /*
+            * Get hardware address
+            */
+            memset(&ifr, 0, sizeof(ifr));
+            (void)strncpy(ifr.ifr_name, iflist[cntr].ifname, strlen(iflist[cntr].ifname)+1);
+            if (ioctl(s, SIOCGIFHWADDR, (char *)&ifr) < 0) {
+                syslog(LOG_ERR, "discoverActiveInterfaces: Error, SIOCGIFHWADDR Failed! (errno=%d)", errno);
+                exit(1);
+            }
+            strncpy(iflist[cntr].ifhwaddr, ifr.ifr_hwaddr.sa_data, 6);
+#endif
 
             /*
              * Get local IP address 
@@ -1087,4 +1172,47 @@ static int find_sock_nr(struct ifsnr *l, int ifidx)
     if (l[i].ifindex == ifidx) return l[i].sock_nr;
   /* not found */
   return -1;
+}
+
+static int add_route_to_host(unsigned long host, struct iflist *iflist)
+{
+    struct sockaddr_in *addr;
+    struct rtentry route;
+    int fd;
+
+    // create the control socket.
+    fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
+    memset(&route, 0, sizeof(route));
+
+    // set the mask. In this case we are using 255.255.255.255.
+    addr = (struct sockaddr_in*) &route.rt_genmask;
+    addr->sin_family = AF_INET;
+    addr->sin_addr.s_addr = 0xFFFFFFFF;
+
+    // set the host
+    addr = (struct sockaddr_in*) &route.rt_dst;
+    addr->sin_family = AF_INET;
+    addr->sin_addr.s_addr = host;
+
+    // These flags mean: this route is created "up", or active
+    route.rt_flags = RTF_UP | RTF_HOST;
+    route.rt_metric = 0;
+    route.rt_dev = iflist->ifname;
+    NVBCR_PRINTF(("\t\tAdding into routing table: %u.%u.%u.%u >> %s\n",
+        (host & 0xFF), ((host >> 8) & 0xFF),
+        (host >> 16 & 0xFF), ((host >> 24) & 0xFF),
+        iflist->ifname
+    ));
+
+    // this is where the magic happens..
+    if (ioctl(fd, SIOCADDRT, &route))
+    {
+      close(fd);
+      syslog(LOG_ERR, "add_route_to_host: Error, add failed! (errno=%d)", errno);
+      return -EEXIST;
+    }
+
+    // remember to close the socket lest you leak handles.
+    close(fd);
+    return 0; 
 }
